@@ -1,138 +1,251 @@
-# Author: WEB SCRAPING MAROC (Enhanced by ChatGPT + Custom Enhancements)
-import time
+import asyncio
+import json
 import csv
-import random
 import os
-import webbrowser
-from parsel import Selector
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+import time
+import sys
+import subprocess
+from pathlib import Path
+from playwright.async_api import async_playwright
 
-# ---------------- CSV setup ----------------
-csv_file = 'LinkedInProfiles.csv'
-writer = csv.writer(open(csv_file, 'w', encoding='utf-8', newline=''))
-writer.writerow(['name', 'job_title', 'schools', 'location', 'ln_url'])
+# File paths
+cookies_path = Path("cookies.json")
+output_csv = Path("linkedin_results.csv")
 
-# ---------------- LinkedIn Bot ----------------
-class LinkedinBot:
-    def __init__(self, li_at_cookie):
-        service = Service(ChromeDriverManager().install())
-        options = webdriver.ChromeOptions()
-        options.add_argument("--disable-logging")
-        options.add_argument("--log-level=3")
-        self.driver = webdriver.Chrome(service=service, options=options)
-        self.driver.maximize_window()
 
-        self.base_url = 'https://www.linkedin.com'
-        self.google_url = 'https://www.google.com'
-        self.li_at = li_at_cookie
+# Helper: Ask question in console
+def ask_question(prompt_text: str) -> str:
+    return input(prompt_text)
 
-    def _nav(self, url):
-        self.driver.get(url)
-        time.sleep(random.uniform(2, 5))
 
-    def login_with_cookie(self):
-        """Login using li_at cookie"""
-        self._nav(self.base_url)
-        self.driver.add_cookie({'name': 'li_at', 'value': self.li_at, 'domain': '.linkedin.com'})
-        self._nav(self.base_url)
-        time.sleep(random.uniform(3, 5))
+# Helper: Delay
+async def delay(ms: int):
+    await asyncio.sleep(ms / 1000)
 
-    def _human_typing(self, element, text):
-        """Type like a human"""
-        for char in text:
-            element.send_keys(char)
-            time.sleep(random.uniform(0.05, 0.2))
 
-    def search(self, text, max_profiles=20):
-        self._nav(self.google_url)
-        search_input = self.driver.find_element(By.NAME, 'q')
-        self._human_typing(search_input, f"site:linkedin.com/in/ {text}")
-        search_input.send_keys(Keys.RETURN)
-        time.sleep(random.uniform(3, 6))
+# Save data to CSV
+def save_to_csv(rows):
+    headers = ["Name", "Title", "Location", "Education", "Profile URL"]
+    with open(output_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({
+                "Name": r.get("name", "N/A"),
+                "Title": r.get("title", "N/A"),
+                "Location": r.get("location", "N/A"),
+                "Education": r.get("education", "N/A"),
+                "Profile URL": r.get("url", "")
+            })
+    print(f"✅ Data saved to {output_csv}")
 
-        scraped_profiles = set()
-        profile_count = 0
-        page_number = 1
 
-        while profile_count < max_profiles:
-            # === CAPTCHA detection ===
-            if "sorry" in self.driver.page_source.lower() or "unusual traffic" in self.driver.page_source.lower():
-                input("CAPTCHA detected! Solve it manually in Chrome and then press Enter to continue...")
+# Open file in Excel automatically
+def open_excel(file_path):
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(file_path)  # ✅ Windows
+        elif sys.platform == "darwin":
+            subprocess.run(["open", file_path])  # ✅ macOS
+        else:
+            subprocess.run(["xdg-open", file_path])  # ✅ Linux
+        print("📂 Opened Excel file.")
+    except Exception as e:
+        print(f"❌ Could not open Excel: {e}")
 
-            # Grab all profile links (Google search results)
-            profile_elements = self.driver.find_elements(By.XPATH, '//a[h3]')
-            profiles = [elem.get_attribute('href') for elem in profile_elements if "linkedin.com/in" in elem.get_attribute('href')]
 
-            # Remove duplicates
-            profiles = [p for p in profiles if p not in scraped_profiles]
+# Scroll page to load dynamic content
+async def auto_scroll(page):
+    try:
+        await page.evaluate("""async () => {
+            await new Promise((resolve) => {
+                let totalHeight = 0;
+                const distance = 100;
+                const timer = setInterval(() => {
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+                    if (totalHeight >= document.body.scrollHeight) {
+                        clearInterval(timer);
+                        resolve();
+                    }
+                }, 100);
+            });
+        }""")
+        print("ℹ Scrolled page to load dynamic content.")
+    except Exception as e:
+        print(f"❌ Failed to scroll: {e}")
 
-            if not profiles:
-                print("⚠️ No more profiles found on this page!")
-                break
 
-            print(f"\n🌍 Page {page_number}: Found {len(profiles)} new profiles")
+# Setup Browser with Correct User-Agent
+async def setup_browser(playwright):
+    browser = await playwright.chromium.launch(
+        headless=False,
+        args=["--no-sandbox", "--disable-setuid-sandbox", "--window-size=1920,1080", "--disable-dev-shm-usage"]
+    )
 
-            for profile in profiles:
-                if profile_count >= max_profiles:
-                    break
+    context = await browser.new_context(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+    )
 
-                self.driver.get(profile)
-                time.sleep(random.uniform(3, 6))
+    page = await context.new_page()
 
-                # Human-like scroll
-                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-                time.sleep(random.uniform(1, 2))
-                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(random.uniform(1, 2))
-
-                try:
-                    sel = Selector(text=self.driver.page_source)
-                    name = sel.xpath('//title/text()').get(default='').split(' | ')[0]
-                    job_title = sel.xpath('//h2/text()').get(default='').strip()
-                    schools = ', '.join(sel.xpath('//*[contains(@class,"pv-entity__school-name")]/text()').getall())
-                    location = sel.xpath('//*[@class="t-16 t-black t-normal inline-block"]/text()').get(default='').strip()
-                    ln_url = self.driver.current_url
-                except:
-                    continue
-
-                profile_count += 1
-                scraped_profiles.add(profile)
-                print(f"[{profile_count}] {name} | {job_title} | {schools} | {location} | {ln_url}")
-                writer.writerow([name, job_title, schools, location, ln_url])
-
-            # Next Google page
-            try:
-                next_button = self.driver.find_element(By.ID, 'pnnext')
-                next_button.click()
-                page_number += 1
-                time.sleep(random.uniform(3, 6))
-            except:
-                print("⚠️ No more Google pages available.")
-                break
-
-        print(f"\n✅ Total profiles scraped: {profile_count}")
-        if profile_count < max_profiles:
-            print(f"⚠️ Alert: Sirf {profile_count} profiles hi mil paye, aapne {max_profiles} maange the.")
-
-        self.driver.quit()
-
-        # Automatically open Excel / CSV file
+    if cookies_path.exists():
         try:
-            abs_path = os.path.abspath(csv_file)
-            webbrowser.open(abs_path)
-        except:
-            print(f"CSV saved at {abs_path}. Open manually.")
+            cookies = json.loads(cookies_path.read_text(encoding="utf-8"))
+            await context.add_cookies(cookies)
+            print("✅ Loaded cookies from file.")
+        except Exception as e:
+            print(f"❌ Failed to load cookies: {e}")
 
-# ---------------- Main ----------------
-if __name__ == '__main__':
-    li_at = "AQEDAV3jfIMFHkmHAAABmMv90YcAAAGY8ApVh00AJw16rwPXmbYJP9J2RodYqU3UwyfgC_4SPOjEc44NUP_g7H7DTaxniMZZpbRst8lDxcD2eTOfmJeHi0xKs_smiFT4HTmg14DJeRkgXYaX0FN848fj"
-    search_text = input("Search Text: ")
-    max_profiles = int(input("Kitne profiles scrape karne hain? "))
+    try:
+        await page.goto("https://www.linkedin.com/feed/", timeout=90000)
+        print("✅ LinkedIn feed loaded successfully.")
+    except Exception:
+        print("❌ Failed to load LinkedIn feed.")
 
-    bot = LinkedinBot(li_at)
-    bot.login_with_cookie()
-    bot.search(search_text, max_profiles=max_profiles)
+    if "/login" in page.url:
+        print("👉 Please log in manually in the opened browser window...")
+        ask_question("🔑 Press Enter after login...")
+        cookies = await context.cookies()
+        cookies_path.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
+        print("💾 Login session saved!")
+
+    return browser, context, page
+
+
+# Scrape Profile Details
+async def scrape_profile(page, profile_url):
+    try:
+        await page.goto(profile_url, timeout=90000)
+        await page.wait_for_selector("h1", timeout=15000)
+        await page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
+        await page.wait_for_timeout(2000)
+
+        data = await page.evaluate("""() => {
+            const getText = (selectors) => {
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.innerText.trim()) return el.innerText.trim();
+                }
+                return "N/A";
+            };
+
+            const name = getText([
+                "h1.inline.t-24.v-align-middle.break-words",
+                "h1.text-heading-xlarge",
+                "h1"
+            ]);
+
+            const title = getText([
+                "div.text-body-medium.break-words",
+                "div.text-body-medium",
+                ".mt1.t-18.t-black.t-normal.break-words"
+            ]);
+
+            const location = getText([
+                "span.text-body-small.inline.t-black--light.break-words",
+                "span.text-body-small"
+            ]);
+
+            // 🔹 Education scraping
+            let education = "N/A";
+            const eduSection = document.querySelector("section[id='education'], section[data-section='education'], div[data-view-name='education']");
+            if (eduSection) {
+                const items = eduSection.querySelectorAll("li span[aria-hidden='true']");
+                if (items.length > 0) {
+                    education = Array.from(items)
+                        .map(el => el.innerText.trim())
+                        .filter(text => text.length > 0)
+                        .slice(0, 2)
+                        .join(" | ");
+                }
+            }
+            if (education === "N/A" && title.includes("|")) {
+                const parts = title.split("|");
+                const possibleEdu = parts[parts.length - 1].trim();
+                if (possibleEdu.length > 3) {
+                    education = possibleEdu;
+                }
+            }
+
+            return { name, title, location, education };
+        }""")
+
+        print(f"✅ Scraped {profile_url}: {data}")
+        return {**data, "url": profile_url}
+
+    except Exception as e:
+        print(f" Failed to scrape {profile_url}: {e}")
+        return {
+            "name": "N/A", "title": "N/A", "location": "N/A",
+            "education": "N/A", "url": profile_url
+        }
+
+
+# Main Function
+async def main():
+    async with async_playwright() as p:
+        browser, _, page = await setup_browser(p)
+
+        limit = int(ask_question("🔢 How many profiles to scrape?: "))
+
+        search_url = "https://www.linkedin.com/company/gameskraft/people/"
+        await page.goto(search_url, timeout=90000)
+
+        profile_urls = set()
+
+        # 🔗 Collect profile URLs
+        while len(profile_urls) < limit:
+            await auto_scroll(page)
+            await delay(2000)
+
+            urls = await page.evaluate("""() => {
+                const selectors = ["a.app-aware-link", "a[href*='/in/']"];
+                let links = [];
+                for (const selector of selectors) {
+                    const found = [...document.querySelectorAll(selector)]
+                        .map(a => a.href)
+                        .filter(h => h.includes("/in/") && !h.includes("/mini-profile/"));
+                    if (found.length > 0) {
+                        links = found;
+                        break;
+                    }
+                }
+                return links;
+            }""")
+
+            for u in urls:
+                profile_urls.add(u)
+            print(f"ℹ Collected {len(profile_urls)} profile URLs...")
+
+            if len(profile_urls) >= limit:
+                break
+
+            next_btn = await page.query_selector("button.artdeco-pagination__button--next:not([disabled])")
+            if not next_btn:
+                print("ℹ No more pages.")
+                break
+            await next_btn.click()
+            await delay(3000)
+
+        # 📝 Scrape Profiles
+        results = []
+        for url in list(profile_urls)[:limit]:
+            print(f"🔍 Scraping {url}")
+            info = await scrape_profile(page, url)
+            results.append(info)
+            await delay(2000)
+
+        print("📋 All data scraped:")
+        for r in results:
+            print(r)
+
+        save_to_csv(results)
+        open_excel(str(output_csv))  # 📂 Auto open Excel
+
+        await browser.close()
+        print("🏁 Done!")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

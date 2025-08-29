@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>LinkedIn Scraper</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 30px; }
+    form { margin-bottom: 20px; }
+    input { padding: 8px; margin: 5px; }
+    button { padding: 10px 15px; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    th { background-color: #f2f2f2; }
+  </style>
+</head>
+<body>
+  <h1>LinkedIn Scraper UI</h1>
+  <form method="POST">
+    <input type="text" name="company" placeholder="Company Name" required>
+    <input type="text" name="role" placeholder="Role" required>
+    <input type="number" name="limit" placeholder="Limit" required>
+    <button type="submit">Scrape</button>
+  </form>
+
+  {% if results %}
+    <h2>Scraped Results</h2>
+    <table>
+      <tr>
+        <th>URL</th>
+        <th>Name</th>
+      </tr>
+      {% for row in results %}
+        <tr>
+          <td><a href="{{ row.url }}" target="_blank">{{ row.url }}</a></td>
+          <td>{{ row.name }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+</body>
+</html>
