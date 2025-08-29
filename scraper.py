@@ -1,3 +1,4 @@
+
 import asyncio
 import json
 import csv
@@ -28,7 +29,7 @@ async def delay(ms: int):
 def save_to_csv(rows):
     headers = [
     "Name", "Title", "Location", "Education", "Profile URL",
-    "Total Experience", "Experience Details"
+    "Total Experience", "Experience Details", "Skills"
     ]
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=headers)
@@ -41,7 +42,8 @@ def save_to_csv(rows):
                 "Education": r.get("education", "N/A"),
                 "Profile URL": r.get("url", ""),
                 "Total Experience": r.get("total_experience", "N/A"),
-                "Experience Details": r.get("experience_details", "N/A")
+                "Experience Details": r.get("experience_details", "N/A"),
+                "Skills": r.get("skills", "N/A")
             })
     print(f"✅ Data saved to {output_csv}")
 
@@ -141,6 +143,54 @@ async def setup_browser(playwright):
         print("💾 Login session saved!")
 
     return browser, context, page
+
+# -----------------------
+# Scrape Skills
+# -----------------------
+async def scrape_skills(page, profile_url):
+    try:
+        # Clean URL & extract username
+        base_url = clean_profile_url(profile_url)
+        if "/in/" not in base_url:
+            return []
+        username = base_url.split("/in/")[1].split("/")[0]
+        skills_url = f"https://www.linkedin.com/in/{username}/details/skills/"
+
+        print(f"🔍 Scraping skills from: {skills_url}")
+        await page.goto(skills_url, timeout=90000)
+        await page.wait_for_timeout(2000)
+        await auto_scroll(page, step=700, max_rounds=20, wait_ms=400)
+        await page.wait_for_timeout(1200)
+
+        # Extract skills
+        skills = await page.evaluate(r"""() => {
+            const skillsList = [];
+            
+            // Look for skills in the skills section
+            const skillItems = document.querySelectorAll('li.pvs-list__paged-list-item span[aria-hidden="true"]');
+            
+            skillItems.forEach((item) => {
+                const skillText = item.innerText.trim();
+                // Filter out empty text, numbers, and common non-skill text
+                if (skillText && 
+                    skillText.length > 1 && 
+                    !skillText.match(/^\d+$/) && 
+                    !skillText.includes('endorsement') &&
+                    !skillText.includes('connection') &&
+                    skillText !== '·') {
+                    skillsList.push(skillText);
+                }
+            });
+
+            // Remove duplicates and return unique skills
+            return [...new Set(skillsList)];
+        }""")
+
+        return skills
+
+    except Exception as e:
+        print(f"❌ Failed to scrape skills for {profile_url}: {e}")
+        return []
 
 # -----------------------
 # Scrape Experience
@@ -329,6 +379,9 @@ async def scrape_profile(page, profile_url):
         # Experience details
         experience_data = await scrape_experience(page, url)
 
+        # Skills details
+        skills_data = await scrape_skills(page, url)
+
         # Format for CSV
         experience_details = []
         for exp in (experience_data.get("experiences") or []):
@@ -338,6 +391,9 @@ async def scrape_profile(page, profile_url):
                 detail += f" | {et}"
             experience_details.append(detail)
         experience_details_str = " || ".join(experience_details[:5])  # limit to 5
+
+        # Format skills for CSV
+        skills_str = " | ".join(skills_data[:10]) if skills_data else "N/A"  # limit to 10 skills
 
         # Extract college name from title if present
         title_raw = basic_data.get("title", "N/A")
@@ -368,7 +424,8 @@ async def scrape_profile(page, profile_url):
             "education": education,
             "url": url,
             "total_experience": clean_na(experience_data.get("totalExperience", "N/A")),
-            "experience_details": clean_na(experience_details_str)
+            "experience_details": clean_na(experience_details_str),
+            "skills": clean_na(skills_str)
         }
         print(f"✅ Scraped {url}: {result['name']}")
         return result
@@ -378,7 +435,8 @@ async def scrape_profile(page, profile_url):
         return {
             "name": "N/A", "title": "N/A", "location": "N/A",
             "education": "N/A", "url": clean_profile_url(profile_url),
-            "total_experience": "N/A", "experience_details": "N/A"
+            "total_experience": "N/A", "experience_details": "N/A",
+            "skills": "N/A"
         }
 
 # -----------------------
@@ -478,4 +536,3 @@ async def main():
         print("🏁 Done!")
 if __name__ == "__main__":
     asyncio.run(main())
-
