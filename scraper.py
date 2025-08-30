@@ -1,4 +1,3 @@
-
 import asyncio
 import json
 import csv
@@ -440,61 +439,162 @@ async def scrape_profile(page, profile_url):
         }
 
 # -----------------------
-# Collect profile URLs from a Company People page
+# IMPROVED: Collect profile URLs from a Company People page with better pagination and show more handling
 # -----------------------
 async def collect_profile_urls(page, people_url, limit):
     profile_urls = set()
+    print(f"🔍 Starting to collect {limit} profile URLs from: {people_url}")
 
     # Go to people page
     await page.goto(people_url, timeout=90000)
     await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(1500)
+    await page.wait_for_timeout(3000)  # Increased wait time
 
-    # Try multiple scroll rounds to load more people
-    for round_idx in range(10):
-        await auto_scroll(page, step=800, max_rounds=8, wait_ms=300)
-        await page.wait_for_timeout(800)
+    # More aggressive collection strategy
+    max_attempts = 50  # Increased from 10
+    attempt = 0
+    no_new_profiles_count = 0
+    
+    while attempt < max_attempts and len(profile_urls) < limit:
+        attempt += 1
+        previous_count = len(profile_urls)
+        
+        print(f"🔄 Collection attempt {attempt}/{max_attempts} - Current profiles: {len(profile_urls)}")
+        
+        # Extended scroll with more patience
+        await auto_scroll(page, step=1000, max_rounds=15, wait_ms=800)
+        await page.wait_for_timeout(2000)
 
-        urls = await page.evaluate(r"""() => {
-            // Collect all visible /in/ links
-            const anchors = Array.from(document.querySelectorAll("a[href*='/in/']"));
-            const hrefs = anchors.map(a => a.href || a.getAttribute("href") || "").filter(Boolean);
-            // filter out mini-profile, feed etc.
-            const filtered = hrefs.filter(h => h.includes("/in/") && !h.includes("/miniProfile/"));
-            return Array.from(new Set(filtered));
-        }""")
-
-        for u in urls:
-            profile_urls.add(u)
-        print(f"ℹ Collected {len(profile_urls)} profile URLs...")
-
-        if len(profile_urls) >= limit:
-            break
-
-        # Pagination (if present)
+        # Try to click "Show more results" button if present
         try:
-            next_btn = await page.query_selector("button.artdeco-pagination__button--next:not([disabled])")
-            if next_btn:
-                await next_btn.click()
-                await delay(1500)
-            else:
-                # If no next, do another scroll round; if still no growth, break
-                pass
+            show_more_selectors = [
+                "button[aria-label*='Show more']",
+                "button[aria-label*='show more']", 
+                "button:has-text('Show more')",
+                "button:has-text('show more')",
+                "button.artdeco-button--secondary:has-text('Show')",
+                ".artdeco-button.artdeco-button--muted.artdeco-button--2.artdeco-button--secondary",
+                "button[data-control-name='show_more_results']"
+            ]
+            
+            for selector in show_more_selectors:
+                try:
+                    show_more_btn = await page.query_selector(selector)
+                    if show_more_btn:
+                        is_visible = await show_more_btn.is_visible()
+                        is_enabled = await show_more_btn.is_enabled()
+                        if is_visible and is_enabled:
+                            print("🔲 Found and clicking 'Show more results' button...")
+                            await show_more_btn.click()
+                            await page.wait_for_timeout(3000)  # Wait for new content to load
+                            break
+                except Exception as e:
+                    continue
+        except Exception as e:
+            pass
+
+        # Try pagination next button with multiple selectors
+        try:
+            next_button_selectors = [
+                "button[aria-label='Next']",
+                "button[aria-label='next']",
+                "button.artdeco-pagination__button--next:not([disabled])",
+                "button:has-text('Next')",
+                ".artdeco-pagination__button.artdeco-pagination__button--next",
+                "li.artdeco-pagination__indicator--number + li button"
+            ]
+            
+            for selector in next_button_selectors:
+                try:
+                    next_btn = await page.query_selector(selector)
+                    if next_btn:
+                        is_disabled = await next_btn.get_attribute('disabled')
+                        is_visible = await next_btn.is_visible()
+                        if not is_disabled and is_visible:
+                            print("➡️ Found and clicking Next button...")
+                            await next_btn.click()
+                            await page.wait_for_timeout(4000)  # Wait for page to load
+                            break
+                except Exception:
+                    continue
         except Exception:
             pass
 
-        await delay(500 + random.randint(200, 600))
+        # Collect URLs with more comprehensive selectors
+        urls = await page.evaluate(r"""() => {
+            // Multiple strategies to find profile links
+            const selectors = [
+                "a[href*='/in/']",
+                "a[data-control-name='people_profile_card_name_link']",
+                "a[data-control-name='member_name']", 
+                ".org-people-profile-card__profile-title a",
+                ".entity-result__title-text a",
+                ".reusable-search__result-container a[href*='/in/']"
+            ];
+            
+            let allLinks = [];
+            selectors.forEach(selector => {
+                const links = Array.from(document.querySelectorAll(selector));
+                allLinks = allLinks.concat(links);
+            });
+            
+            const hrefs = allLinks
+                .map(a => a.href || a.getAttribute("href") || "")
+                .filter(h => h && h.includes("/in/") && 
+                        !h.includes("/miniProfile/") && 
+                        !h.includes("/company/") &&
+                        !h.includes("/school/") &&
+                        !h.includes("/feed/"))
+                .map(h => h.split('?')[0]); // Remove query params
+            
+            return [...new Set(hrefs)]; // Remove duplicates
+        }""")
 
-    # Clean and trim
+        for u in urls:
+            if u:
+                profile_urls.add(u)
+
+        new_count = len(profile_urls)
+        new_profiles_found = new_count - previous_count
+        
+        print(f"📊 Found {new_profiles_found} new profiles. Total: {new_count}/{limit}")
+
+        # If no new profiles found, increment counter
+        if new_profiles_found == 0:
+            no_new_profiles_count += 1
+        else:
+            no_new_profiles_count = 0
+
+        # If we haven't found new profiles in 5 consecutive attempts, try different approach
+        if no_new_profiles_count >= 5:
+            print("🔄 No new profiles found in recent attempts. Trying different scroll pattern...")
+            # Try scrolling to top and back down
+            await page.evaluate("window.scrollTo(0, 0)")
+            await page.wait_for_timeout(2000)
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(3000)
+            no_new_profiles_count = 0
+
+        # Break if we have enough profiles
+        if len(profile_urls) >= limit:
+            print(f"✅ Collected enough profiles: {len(profile_urls)}")
+            break
+
+        # Random delay to avoid being detected
+        await delay(1000 + random.randint(500, 2000))
+
+    # Clean and trim URLs
     cleaned = []
     for u in profile_urls:
-        cleaned.append(clean_profile_url(u))
-    cleaned = list(dict.fromkeys(cleaned))  # preserve order, dedupe
-    return cleaned[:limit]
+        cleaned_url = clean_profile_url(u)
+        if cleaned_url and cleaned_url not in cleaned:
+            cleaned.append(cleaned_url)
 
-# -----------------------
-# Main
-# -----------------------
+    final_list = cleaned[:limit]
+    print(f"🎯 Final collection: {len(final_list)} unique profile URLs")
+    
+    return final_list
+
 # -----------------------
 # Main
 # -----------------------
@@ -510,29 +610,52 @@ async def main():
         # Fixed Gameskraft people URL
         people_url = "https://www.linkedin.com/company/gameskraft/people/"
 
-        # Collect profile URLs
+        # Collect profile URLs with improved method
         urls = await collect_profile_urls(page, people_url, limit)
+        
         if not urls:
-            print("ℹ No profile URLs found. Try scrolling manually in the opened page, then press Enter here.")
+            print("⚠️ No profile URLs found. This might be due to:")
+            print("   - LinkedIn requiring login")
+            print("   - Company page not accessible") 
+            print("   - Rate limiting")
+            print("ℹ Try scrolling manually in the opened page, then press Enter here.")
             ask_question("➡️ Press Enter to attempt re-collect...")
             urls = await collect_profile_urls(page, people_url, limit)
 
-        # Scrape
-        results = []
-        for i, url in enumerate(urls[:limit], 1):
-            print(f"🔍 Scraping profile {i}/{limit}: {url}")
-            info = await scrape_profile(page, url)
-            results.append(info)
-            await delay(2000 + random.randint(500, 1800))
+        if len(urls) < limit:
+            print(f"⚠️ Only found {len(urls)} profiles instead of requested {limit}")
+            print("   This is normal for smaller companies or restricted access")
 
-        print("📋 All data scraped:")
+        # Scrape profiles
+        results = []
+        for i, url in enumerate(urls, 1):
+            print(f"🔍 Scraping profile {i}/{len(urls)}: {url}")
+            try:
+                info = await scrape_profile(page, url)
+                results.append(info)
+                print(f"✅ Successfully scraped: {info['name']}")
+            except Exception as e:
+                print(f"❌ Failed to scrape {url}: {e}")
+                # Add placeholder data for failed scrapes
+                results.append({
+                    "name": "Failed to scrape", "title": "N/A", "location": "N/A",
+                    "education": "N/A", "url": url, "total_experience": "N/A", 
+                    "experience_details": "N/A", "skills": "N/A"
+                })
+            
+            # Increased delay between profile scrapes
+            await delay(3000 + random.randint(1000, 3000))
+
+        print(f"\n📋 Successfully scraped {len([r for r in results if r['name'] != 'Failed to scrape'])} profiles:")
         for r in results:
-            print(f"Name: {r['name']}, Title: {r['title']}")
+            if r['name'] != 'Failed to scrape':
+                print(f"   • {r['name']} - {r['title']}")
 
         save_to_csv(results)
         open_excel(str(output_csv))
 
         await browser.close()
-        print("🏁 Done!")
+        print("🏁 Scraping completed!")
+
 if __name__ == "__main__":
     asyncio.run(main())
